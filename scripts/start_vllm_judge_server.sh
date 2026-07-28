@@ -12,7 +12,8 @@ GPU_MEM_UTIL="${VLLM_JUDGE_GPU_MEM_UTIL:-0.85}"
 TP_SIZE="${VLLM_JUDGE_TP_SIZE:-1}"
 DP_SIZE="${VLLM_JUDGE_DP_SIZE:-1}"
 ATTN_BACKEND="${VLLM_JUDGE_ATTN_BACKEND:-FLASHINFER}"
-CACHE_PATH="${VLLM_JUDGE_CACHE_PATH:-${HOME}/.cache}"
+# Prefer explicit cache, then existing HF_HOME (HPC jobs), then home fallback.
+CACHE_PATH="${VLLM_JUDGE_CACHE_PATH:-${HF_HOME:-${HOME}/.cache}}"
 LOG_DIR="${VLLM_JUDGE_LOG_DIR:-eval/logs}"
 LOG_FILE="${VLLM_JUDGE_LOG_FILE:-}"
 DISABLE_PREFIX_CACHING="${VLLM_JUDGE_DISABLE_PREFIX_CACHING:-1}"
@@ -35,7 +36,7 @@ Environment overrides:
   VLLM_JUDGE_TP_SIZE                 Tensor parallel size (default: 1)
   VLLM_JUDGE_DP_SIZE                 Data parallel size (default: 1)
   VLLM_JUDGE_ATTN_BACKEND            FLASHINFER | FLASH_ATTN | TRITON_ATTN | FLEX_ATTENTION
-  VLLM_JUDGE_CACHE_PATH              HF cache path (default: HOME/.cache)
+  VLLM_JUDGE_CACHE_PATH              HF cache path (default: HF_HOME, else HOME/.cache)
   VLLM_JUDGE_LOG_DIR                 Directory for server logs (default: eval/logs)
   VLLM_JUDGE_LOG_FILE                Explicit log file path
   VLLM_JUDGE_DISABLE_PREFIX_CACHING  1 to disable prefix caching (default: 1)

@@ -151,7 +151,7 @@ For model serving:
 - `VLLM_GPU_MEM_UTIL`: tune memory headroom vs throughput
 - `VLLM_ATTN_BACKEND`: choose backend explicitly for repeatability
 - `VLLM_LOG_FILE` or `VLLM_LOG_DIR`: preserve server logs for auditability
-- `VLLM_CACHE_PATH`: isolate Hugging Face cache location for reproducible infra setups
+- `VLLM_CACHE_PATH`: isolate Hugging Face cache location (defaults to `HF_HOME`, then `HOME/.cache`)
 
 For judge serving, the equivalent `VLLM_JUDGE_*` variables are supported.
 
