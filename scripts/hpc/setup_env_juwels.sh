@@ -54,8 +54,18 @@ if [[ ! -d "${EU_GUARD_ROOT}/eval_harness" ]]; then
   exit 1
 fi
 
-cd "${EU_GUARD_ROOT}"
-pip install -e ".[vllm]"
+PACKAGE_ROOT="${EU_GUARD_ROOT}"
+if [[ ! -f "${PACKAGE_ROOT}/pyproject.toml" && -f "${EU_GUARD_ROOT}/eval_harness/pyproject.toml" ]]; then
+  PACKAGE_ROOT="${EU_GUARD_ROOT}/eval_harness"
+fi
+
+if [[ ! -f "${PACKAGE_ROOT}/pyproject.toml" ]]; then
+  echo "No pyproject.toml found in ${EU_GUARD_ROOT} or ${EU_GUARD_ROOT}/eval_harness." >&2
+  echo "Pull the latest eval_harness checkout before rerunning this script." >&2
+  exit 1
+fi
+
+pip install -e "${PACKAGE_ROOT}[vllm]"
 
 cat <<EOF
 
