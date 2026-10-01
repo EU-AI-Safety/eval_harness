@@ -11,7 +11,8 @@ DTYPE="${VLLM_JUDGE_DTYPE:-bfloat16}"
 GPU_MEM_UTIL="${VLLM_JUDGE_GPU_MEM_UTIL:-0.85}"
 TP_SIZE="${VLLM_JUDGE_TP_SIZE:-1}"
 DP_SIZE="${VLLM_JUDGE_DP_SIZE:-1}"
-ATTN_BACKEND="${VLLM_JUDGE_ATTN_BACKEND:-FLASHINFER}"
+# Empty = let vLLM choose (needed for Gemma-4 heterogeneous head dims).
+ATTN_BACKEND="${VLLM_JUDGE_ATTN_BACKEND:-}"
 # Prefer explicit cache, then existing HF_HOME (HPC jobs), then home fallback.
 CACHE_PATH="${VLLM_JUDGE_CACHE_PATH:-${HF_HOME:-${HOME}/.cache}}"
 LOG_DIR="${VLLM_JUDGE_LOG_DIR:-eval/logs}"
@@ -27,7 +28,7 @@ Usage: bash eval_harness/scripts/start_vllm_judge_server.sh [model_dir_or_hf_rep
 
 Environment overrides:
   VLLM_JUDGE_MODEL                   Model path or HF repo id
-  VLLM_JUDGE_SERVED_MODEL_NAME       Explicit served model name shown by the API
+  VLLM_JUDGE_SERVED_MODEL_NAME       Explicit served model name (default: same as VLLM_JUDGE_MODEL)
   VLLM_JUDGE_PORT                    Server port (default: 8001)
   VLLM_JUDGE_HOST                    Server host (default: 0.0.0.0)
   VLLM_JUDGE_API_KEY                 API key required by the server (default: dummy)
@@ -56,12 +57,14 @@ if [[ $SHOW_HELP -eq 1 ]]; then
   exit 0
 fi
 
+# Default served name to the full model id so CLI --judge-model matches /v1/models.
 if [[ -z "$SERVED_MODEL_NAME" ]]; then
-  SERVED_MODEL_NAME="$(basename "$MODEL_DIR")"
+  SERVED_MODEL_NAME="$MODEL_DIR"
 fi
+LOG_NAME_SAFE="${SERVED_MODEL_NAME//\//_}"
 
 case "$ATTN_BACKEND" in
-  FLASHINFER|FLASH_ATTN|TRITON_ATTN|FLEX_ATTENTION) ;;
+  ""|FLASHINFER|FLASH_ATTN|TRITON_ATTN|FLEX_ATTENTION|TORCH_SDPA) ;;
   *)
     echo "Error: unsupported VLLM_JUDGE_ATTN_BACKEND '$ATTN_BACKEND'" >&2
     exit 2
@@ -70,11 +73,15 @@ esac
 
 mkdir -p "$LOG_DIR"
 if [[ -z "$LOG_FILE" ]]; then
-  LOG_FILE="$LOG_DIR/vllm_judge_${SERVED_MODEL_NAME}_${DTYPE}_$(date +%Y%m%d_%H%M%S).log"
+  LOG_FILE="$LOG_DIR/vllm_judge_${LOG_NAME_SAFE}_${DTYPE}_$(date +%Y%m%d_%H%M%S).log"
 fi
 
+# Launch via Gemma-4 hetero compat shim (no-op for homogeneous models).
+# transformers>=5.14 remaps dual head dims into per_layer_config; vLLM 0.26
+# still needs legacy global_head_dim access for google/gemma-4-* judges.
 COMMAND=(
-  python3 -m vllm.entrypoints.openai.api_server
+  python3 -m eval_harness.vllm_gemma4_hetero_compat --
+  -m vllm.entrypoints.openai.api_server
   --model "$MODEL_DIR"
   --host "$HOST"
   --port "$PORT"
@@ -84,9 +91,12 @@ COMMAND=(
   --gpu-memory-utilization "$GPU_MEM_UTIL"
   --tensor-parallel-size "$TP_SIZE"
   --data-parallel-size "$DP_SIZE"
-  --attention-backend "$ATTN_BACKEND"
   --override-generation-config '{"temperature": 0.0}'
 )
+
+if [[ -n "$ATTN_BACKEND" ]]; then
+  COMMAND+=(--attention-backend "$ATTN_BACKEND")
+fi
 
 if [[ "$DISABLE_PREFIX_CACHING" == "1" ]]; then
   COMMAND+=(--no-enable-prefix-caching)
@@ -115,7 +125,7 @@ echo "  dtype: $DTYPE"
 echo "  gpu_memory_utilization: $GPU_MEM_UTIL"
 echo "  tensor_parallel_size: $TP_SIZE"
 echo "  data_parallel_size: $DP_SIZE"
-echo "  attention_backend: $ATTN_BACKEND"
+echo "  attention_backend: ${ATTN_BACKEND:-<vllm default>}"
 echo "  override_generation_config: temperature=0.0"
 echo "  prefix_caching_disabled: $DISABLE_PREFIX_CACHING"
 echo "  request_logging_enabled: $ENABLE_REQUEST_LOGGING"

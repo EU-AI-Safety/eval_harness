@@ -48,3 +48,6 @@ eval_harness/data/
 *.log
 *.tmp
 *.swp
+
+# HPC / cluster-specific scripts (Jupiter paths, SLURM configs, candidate envs)
+scripts/hpc/ 

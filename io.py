@@ -64,3 +64,21 @@ def load_jsonl_index(path: Path, key: str) -> dict[str, dict[str, Any]]:
     if not path.exists():
         return {}
     return {row[key]: row for row in iter_jsonl(path)}
+
+
+def rewrite_jsonl(path: Path, rows: Iterable[dict[str, Any]]) -> None:
+    """Atomically rewrite a JSONL file with the given rows (caller chooses order)."""
+    ensure_parent_dir(path)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    with tmp_path.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    tmp_path.replace(path)
+
+
+def compact_jsonl_by_key(path: Path, key: str) -> dict[str, dict[str, Any]]:
+    """Keep the last record per key and rewrite the file. Returns the compacted index."""
+    index = load_jsonl_index(path, key)
+    if path.exists():
+        rewrite_jsonl(path, index.values())
+    return index

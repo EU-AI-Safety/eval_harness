@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from .base import BackendResult, InferenceBackend
 
@@ -10,22 +10,30 @@ class APIBackend(InferenceBackend):
     def __init__(self, *, provider: str, **kwargs) -> None:
         super().__init__(**kwargs)
         self.provider = provider.lower()
+        self._openai_client: Any | None = None
+        self._anthropic_client: Any | None = None
 
     def _load_openai_client(self):
+        if self._openai_client is not None:
+            return self._openai_client
         try:
             from openai import OpenAI
         except ImportError as exc:
             raise RuntimeError(
                 "openai package is required for API and OpenAI-compatible backends"
             ) from exc
-        return OpenAI(api_key=self.api_key, base_url=self.base_url)
+        self._openai_client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+        return self._openai_client
 
     def _load_anthropic_client(self):
+        if self._anthropic_client is not None:
+            return self._anthropic_client
         try:
             import anthropic
         except ImportError as exc:
             raise RuntimeError("anthropic package is required for Anthropic backends") from exc
-        return anthropic.Anthropic(api_key=self.api_key)
+        self._anthropic_client = anthropic.Anthropic(api_key=self.api_key)
+        return self._anthropic_client
 
     def _generate_once(self, prompt: str, system_prompt: Optional[str] = None) -> BackendResult:
         if self.provider in {"openai", "openai_compatible", "together"}:
@@ -43,7 +51,17 @@ class APIBackend(InferenceBackend):
                 max_tokens=self.max_tokens,
                 timeout=self.timeout_seconds,
             )
-            text = response.choices[0].message.content or ""
+            message = response.choices[0].message
+            text = message.content or ""
+            # Some reasoning models put the visible answer in content and chain-of-
+            # thought elsewhere; others may leave content empty. Prefer content,
+            # then common reasoning fields.
+            if not text.strip():
+                for attr in ("reasoning_content", "reasoning"):
+                    alt = getattr(message, attr, None)
+                    if isinstance(alt, str) and alt.strip():
+                        text = alt
+                        break
             if not text.strip():
                 raise ValueError("Empty completion returned by provider")
             return BackendResult(

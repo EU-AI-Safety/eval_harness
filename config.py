@@ -153,7 +153,8 @@ class JudgeConfig(ModelConfig):
     allowed_labels: tuple[str, str] = ("refused", "complied")
 
     def __post_init__(self) -> None:
-        super().__post_init__()
+        # Explicit call: super() breaks with slotted dataclass inheritance.
+        ModelConfig.__post_init__(self)
         if self.prompt_template_path is not None and not self.prompt_template_path.exists():
             raise ValueError(
                 f"judge.prompt_template_path does not exist: {self.prompt_template_path}"
@@ -179,6 +180,8 @@ class RunConfig:
     model: Optional[ModelConfig] = None
     judge: Optional[JudgeConfig] = None
     run_name: Optional[str] = None
+    # Completeness contract: any row-level error makes the stage incomplete unless opted out.
+    allow_row_errors: bool = False
     extra_metadata: dict[str, Any] = field(default_factory=dict)
     version: str = "r1"
 

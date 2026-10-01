@@ -14,6 +14,7 @@ class VLLMBackend(InferenceBackend):
         self.mode = mode
         self._local_llm = None
         self._local_llm_lock = Lock()
+        self._openai_delegate: APIBackend | None = None
 
     def _get_local_llm(self):
         if self._local_llm is not None:
@@ -28,9 +29,9 @@ class VLLMBackend(InferenceBackend):
             self._local_llm = LLM(model=self.model)
             return self._local_llm
 
-    def _generate_once(self, prompt: str, system_prompt: Optional[str] = None) -> BackendResult:
-        if self.mode == "openai_compatible":
-            delegate = APIBackend(
+    def _get_openai_delegate(self) -> APIBackend:
+        if self._openai_delegate is None:
+            self._openai_delegate = APIBackend(
                 provider="openai_compatible",
                 model=self.model,
                 api_key=self.api_key,
@@ -44,7 +45,11 @@ class VLLMBackend(InferenceBackend):
                 retry_max_delay_seconds=self.retry_max_delay_seconds,
                 retry_jitter_seconds=self.retry_jitter_seconds,
             )
-            return delegate.generate(prompt, system_prompt=system_prompt)
+        return self._openai_delegate
+
+    def _generate_once(self, prompt: str, system_prompt: Optional[str] = None) -> BackendResult:
+        if self.mode == "openai_compatible":
+            return self._get_openai_delegate().generate(prompt, system_prompt=system_prompt)
 
         if self.mode == "local":
             try:

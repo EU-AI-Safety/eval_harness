@@ -178,6 +178,7 @@ def load_run_config(
             else None
         ),
         run_name=str(payload.get("run_name")) if payload.get("run_name") else None,
+        allow_row_errors=bool(cli_overrides.get("allow_row_errors", payload.get("allow_row_errors", False))),
         extra_metadata=extra_metadata,
         version=str(payload.get("version", "r1")),
     )

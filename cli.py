@@ -68,6 +68,14 @@ def build_parser() -> argparse.ArgumentParser:
             help="Use only rows that are not marked as machine translated.",
         )
         subparser.add_argument("--overwrite", action="store_true", help="Overwrite existing outputs instead of resuming.")
+        subparser.add_argument(
+            "--allow-row-errors",
+            action="store_true",
+            help=(
+                "Allow the stage/run to exit successfully even if some rows failed. "
+                "By default any row-level error makes the run incomplete (exit code 1)."
+            ),
+        )
         subparser.add_argument("--run-name", help="Custom name for this run.")
         subparser.add_argument("--language-include", action="append", default=[], help="Only include these languages. Repeat to add more.")
         subparser.add_argument("--language-exclude", action="append", default=[], help="Exclude these languages. Repeat to add more.")
@@ -243,6 +251,7 @@ def _run_config_from_args(args: argparse.Namespace, include_judge: bool = False)
                 "concurrency": args.concurrency,
                 "verified_only": args.verified_only,
                 "overwrite": args.overwrite,
+                "allow_row_errors": getattr(args, "allow_row_errors", False),
             },
         )
     if not args.model_name or not args.backend or not args.model:
@@ -265,7 +274,29 @@ def _run_config_from_args(args: argparse.Namespace, include_judge: bool = False)
         model=_model_config_from_args(args),
         judge=_judge_config_from_args(args) if include_judge else None,
         run_name=args.run_name,
+        allow_row_errors=bool(getattr(args, "allow_row_errors", False)),
     )
+
+
+def _stage_is_complete(status_path: Path) -> bool:
+    if not status_path.exists():
+        return False
+    payload = json.loads(status_path.read_text(encoding="utf-8"))
+    if "complete" in payload:
+        return bool(payload["complete"])
+    return int(payload.get("failure_count", 0)) == 0 and payload.get("status") == "completed"
+
+
+def _enforce_completeness(config: RunConfig, *status_paths: Path) -> None:
+    if config.allow_row_errors:
+        return
+    incomplete = [str(path) for path in status_paths if not _stage_is_complete(path)]
+    if incomplete:
+        raise SystemExit(
+            "Run incomplete: one or more stages reported row-level errors. "
+            "Re-run to retry failed rows, or pass --allow-row-errors to accept partial results. "
+            f"Status files: {', '.join(incomplete)}"
+        )
 
 
 def main() -> None:
@@ -273,12 +304,23 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "generate":
-        run_generation(_run_config_from_args(args))
+        config = _run_config_from_args(args)
+        run_generation(config)
+        _enforce_completeness(
+            config,
+            config.output_dir / "manifests" / f"{config.resolved_run_name}.generation.status.json",
+        )
         return
 
     if args.command == "judge":
         config = _run_config_from_args(args, include_judge=True)
         run_judging(config)
+        _enforce_completeness(
+            config,
+            config.output_dir
+            / "manifests"
+            / f"{config.model.name}__{config.judge.name}.judging.status.json",
+        )
         return
 
     if args.command == "run-all":
@@ -286,6 +328,13 @@ def main() -> None:
         responses_path = run_generation(config)
         judged_path = run_judging(config, responses_path=responses_path)
         score_judged_file(judged_path, config.output_dir, f"{config.model.name}__{config.judge.name}")
+        _enforce_completeness(
+            config,
+            config.output_dir / "manifests" / f"{config.resolved_run_name}.generation.status.json",
+            config.output_dir
+            / "manifests"
+            / f"{config.model.name}__{config.judge.name}.judging.status.json",
+        )
         return
 
     if args.command == "plan":

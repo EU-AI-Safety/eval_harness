@@ -19,6 +19,105 @@ temperature = 0.0
 top_p = 1.0
 max_tokens = 512
 
+[models.qwen2.5-7b-instruct-local]
+name = "qwen2.5-7b-instruct-local"
+backend = "vllm"
+mode = "server"
+model = "Qwen/Qwen2.5-7B-Instruct"
+base_url = "http://localhost:8000/v1"
+api_key = "dummy"
+temperature = 0.0
+top_p = 1.0
+max_tokens = 512
+
+[models.qwen2.5-32b-instruct-local]
+name = "qwen2.5-32b-instruct-local"
+backend = "vllm"
+mode = "server"
+model = "Qwen/Qwen2.5-32B-Instruct"
+base_url = "http://localhost:8000/v1"
+api_key = "dummy"
+temperature = 0.0
+top_p = 1.0
+max_tokens = 512
+
+[models.gemma-2-9b-it-local]
+name = "gemma-2-9b-it-local"
+backend = "vllm"
+mode = "server"
+model = "google/gemma-2-9b-it"
+base_url = "http://localhost:8000/v1"
+api_key = "dummy"
+temperature = 0.0
+top_p = 1.0
+max_tokens = 512
+
+[models.gemma-2-27b-it-local]
+name = "gemma-2-27b-it-local"
+backend = "vllm"
+mode = "server"
+model = "google/gemma-2-27b-it"
+base_url = "http://localhost:8000/v1"
+api_key = "dummy"
+temperature = 0.0
+top_p = 1.0
+max_tokens = 512
+
+[models.aya-expanse-8b-local]
+name = "aya-expanse-8b-local"
+backend = "vllm"
+mode = "server"
+model = "CohereForAI/aya-expanse-8b"
+base_url = "http://localhost:8000/v1"
+api_key = "dummy"
+temperature = 0.0
+top_p = 1.0
+max_tokens = 512
+
+[models.aya-expanse-32b-local]
+name = "aya-expanse-32b-local"
+backend = "vllm"
+mode = "server"
+model = "CohereForAI/aya-expanse-32b"
+base_url = "http://localhost:8000/v1"
+api_key = "dummy"
+temperature = 0.0
+top_p = 1.0
+max_tokens = 512
+
+[models.llama-3.2-1b-instruct-local]
+name = "llama-3.2-1b-instruct-local"
+backend = "vllm"
+mode = "server"
+model = "meta-llama/Llama-3.2-1B-Instruct"
+base_url = "http://localhost:8000/v1"
+api_key = "dummy"
+temperature = 0.0
+top_p = 1.0
+max_tokens = 512
+
+[models.llama-3.2-3b-instruct-local]
+name = "llama-3.2-3b-instruct-local"
+backend = "vllm"
+mode = "server"
+model = "meta-llama/Llama-3.2-3B-Instruct"
+base_url = "http://localhost:8000/v1"
+api_key = "dummy"
+temperature = 0.0
+top_p = 1.0
+max_tokens = 512
+
+[models.phi-4-14b-local]
+name = "phi-4-14b-local"
+backend = "vllm"
+mode = "server"
+model = "microsoft/phi-4"
+base_url = "http://localhost:8000/v1"
+api_key = "dummy"
+temperature = 0.0
+top_p = 1.0
+max_tokens = 512
+
 [judges.qwen-judge-v1]
 name = "qwen-judge-v1"
 backend = "vllm"

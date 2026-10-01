@@ -57,6 +57,7 @@ class JudgeRecord:
     annex_section: str
     is_machine_translation: bool
     raw_judge_output: str
+    judge_explanation: str = ""
     parsing_status: str = "success"
     metadata: dict[str, Any] = field(default_factory=dict)
 

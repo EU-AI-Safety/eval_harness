@@ -27,7 +27,7 @@ Usage: bash eval_harness/scripts/start_vllm_model_server.sh [model_dir_or_hf_rep
 
 Environment overrides:
   VLLM_MODEL                  Model path or HF repo id
-  VLLM_SERVED_MODEL_NAME      Explicit served model name shown by the API
+  VLLM_SERVED_MODEL_NAME      Explicit served model name (default: same as VLLM_MODEL)
   VLLM_PORT                   Server port (default: 8000)
   VLLM_HOST                   Server host (default: 0.0.0.0)
   VLLM_API_KEY                API key required by the server (default: dummy)
@@ -56,12 +56,14 @@ if [[ $SHOW_HELP -eq 1 ]]; then
   exit 0
 fi
 
+# Default served name to the full model id so CLI --model matches /v1/models.
 if [[ -z "$SERVED_MODEL_NAME" ]]; then
-  SERVED_MODEL_NAME="$(basename "$MODEL_DIR")"
+  SERVED_MODEL_NAME="$MODEL_DIR"
 fi
+LOG_NAME_SAFE="${SERVED_MODEL_NAME//\//_}"
 
 case "$ATTN_BACKEND" in
-  FLASHINFER|FLASH_ATTN|TRITON_ATTN|FLEX_ATTENTION) ;;
+  FLASHINFER|FLASH_ATTN|TRITON_ATTN|FLEX_ATTENTION|TORCH_SDPA) ;;
   *)
     echo "Error: unsupported VLLM_ATTN_BACKEND '$ATTN_BACKEND'" >&2
     exit 2
@@ -70,7 +72,7 @@ esac
 
 mkdir -p "$LOG_DIR"
 if [[ -z "$LOG_FILE" ]]; then
-  LOG_FILE="$LOG_DIR/vllm_model_${SERVED_MODEL_NAME}_${DTYPE}_$(date +%Y%m%d_%H%M%S).log"
+  LOG_FILE="$LOG_DIR/vllm_model_${LOG_NAME_SAFE}_${DTYPE}_$(date +%Y%m%d_%H%M%S).log"
 fi
 
 COMMAND=(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import socket
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -8,21 +9,63 @@ from time import time
 from .backends import create_backend
 from .config import RunConfig
 from .dataset import dataset_file_sha1, summarize_dataset
-from .io import append_jsonl, iter_jsonl, load_jsonl_index, write_json
+from .io import append_jsonl, compact_jsonl_by_key, iter_jsonl, load_jsonl_index, rewrite_jsonl, write_json
 from .run_specs import config_fingerprint
 from .types import JudgeRecord
 
 
 DEFAULT_JUDGE_TEMPLATE_PATH = Path(__file__).resolve().parent / "prompts" / "judge_refusal.txt"
 
+_LABEL_LINE_RE = re.compile(
+    r"^\s*label\s*:\s*[<\(\[\"'`]*\s*(refused|complied)\s*[>\)\]\"'`]*\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_EXPLANATION_LINE_RE = re.compile(r"^\s*explanation\s*:\s*", re.IGNORECASE | re.MULTILINE)
+
+
+def parse_judge_output(raw_output: str) -> tuple[str, str]:
+    """Parse structured judge output into (label, explanation).
+
+    Preferred format:
+      label: refused|complied
+      explanation: ...
+
+    Also accepts a legacy bare label (or text containing only one label word).
+    """
+    text = raw_output.strip()
+    if not text:
+        raise ValueError("Could not parse empty judge output")
+
+    label_match = _LABEL_LINE_RE.search(text)
+    explanation_match = _EXPLANATION_LINE_RE.search(text)
+    parsed_explanation = ""
+    if explanation_match:
+        parsed_explanation = text[explanation_match.end() :].strip()
+
+    if label_match:
+        label = label_match.group(1).lower()
+        after_label = text[label_match.end() :].strip()
+        explanation = parsed_explanation or after_label
+        return label, explanation
+
+    normalized = text.lower()
+    if normalized in {"refused", "complied"}:
+        return normalized, parsed_explanation
+    if "refused" in normalized and "complied" not in normalized:
+        return "refused", parsed_explanation
+    if "complied" in normalized and "refused" not in normalized:
+        return "complied", parsed_explanation
+    raise ValueError(f"Could not parse judge output: {raw_output}")
+
 
 def normalize_judge_label(raw_output: str) -> str:
-    normalized = raw_output.strip().lower()
-    if "refused" in normalized:
-        return "refused"
-    if "complied" in normalized:
-        return "complied"
-    raise ValueError(f"Could not normalize judge output: {raw_output}")
+    label, _explanation = parse_judge_output(raw_output)
+    return label
+
+
+def _successful_judged_index(path: Path) -> dict[str, dict]:
+    index = load_jsonl_index(path, "row_id")
+    return {row_id: row for row_id, row in index.items() if row.get("parsing_status") == "success"}
 
 
 def _judge_template(config: RunConfig) -> str:
@@ -50,9 +93,11 @@ def plan_judging(config: RunConfig, responses_path: Path | None = None) -> dict:
         raise ValueError("RunConfig.model and RunConfig.judge must be provided for judging")
     source_path = responses_path or config.output_dir / "responses" / f"{config.resolved_run_name}.jsonl"
     output_path = _judged_path(config)
-    completed = {} if config.overwrite else load_jsonl_index(output_path, "row_id")
+    completed = {} if config.overwrite else _successful_judged_index(output_path)
     rows = list(iter_jsonl(source_path)) if source_path.exists() else []
-    pending = [row for row in rows if row["row_id"] not in completed]
+    # Deduplicate responses by row_id (last write wins) before planning.
+    response_index = {row["row_id"]: row for row in rows}
+    pending = [row for row_id, row in response_index.items() if row_id not in completed]
     return {
         "task": "judging_plan",
         "version": config.version,
@@ -63,7 +108,7 @@ def plan_judging(config: RunConfig, responses_path: Path | None = None) -> dict:
         },
         "responses_path": str(source_path),
         "responses_exist": source_path.exists(),
-        "response_count_total": len(rows),
+        "response_count_total": len(response_index),
         "response_count_pending": len(pending),
         "response_count_completed_existing": len(completed),
         "output_path": str(output_path),
@@ -86,11 +131,12 @@ def run_judging(config: RunConfig, responses_path: Path | None = None) -> Path:
         raise ValueError("RunConfig.model and RunConfig.judge must be provided for judging")
     source_path = responses_path or config.output_dir / "responses" / f"{config.resolved_run_name}.jsonl"
     output_path = _judged_path(config)
-    completed = {} if config.overwrite else load_jsonl_index(output_path, "row_id")
+    completed = {} if config.overwrite else _successful_judged_index(output_path)
     template = _judge_template(config)
     judge_backend = create_backend(config.judge)
 
-    rows = [row for row in iter_jsonl(source_path) if row["row_id"] not in completed]
+    response_index = {row["row_id"]: row for row in iter_jsonl(source_path)}
+    rows = [row for row_id, row in response_index.items() if row_id not in completed]
     generation_failures = sum(1 for row in rows if row.get("status") != "success")
     write_json(
         _manifest_path(config),
@@ -105,6 +151,7 @@ def run_judging(config: RunConfig, responses_path: Path | None = None) -> Path:
             "response_count_pending": len(rows),
             "response_count_completed_existing": len(completed),
             "response_count_generation_failures": generation_failures,
+            "allow_row_errors": config.allow_row_errors,
             "judge": {
                 "name": config.judge.name,
                 "backend": config.judge.backend,
@@ -119,6 +166,9 @@ def run_judging(config: RunConfig, responses_path: Path | None = None) -> Path:
     write_json(_status_path(config), {"status": "running", "pending": len(rows)})
     if config.overwrite and output_path.exists():
         output_path.unlink()
+    elif completed:
+        # Drop prior non-success rows so retries replace them cleanly.
+        rewrite_jsonl(output_path, completed.values())
 
     def process_row(row: dict) -> JudgeRecord:
         started_at = time()
@@ -137,6 +187,7 @@ def run_judging(config: RunConfig, responses_path: Path | None = None) -> Path:
                 annex_section=row["annex_section"],
                 is_machine_translation=row["is_machine_translation"],
                 raw_judge_output=row.get("error") or "generation_failed",
+                judge_explanation="",
                 parsing_status="generation_error",
                 metadata={
                     **row.get("metadata", {}),
@@ -148,7 +199,7 @@ def run_judging(config: RunConfig, responses_path: Path | None = None) -> Path:
         judge_prompt = template.format(prompt=row["prompt"], response=row["response"])
         try:
             backend_result = judge_backend.generate(judge_prompt)
-            judge_label = normalize_judge_label(backend_result.text)
+            judge_label, judge_explanation = parse_judge_output(backend_result.text)
             return JudgeRecord(
                 row_id=row["row_id"],
                 target=row["target"],
@@ -163,6 +214,7 @@ def run_judging(config: RunConfig, responses_path: Path | None = None) -> Path:
                 annex_section=row["annex_section"],
                 is_machine_translation=row["is_machine_translation"],
                 raw_judge_output=backend_result.text,
+                judge_explanation=judge_explanation,
                 parsing_status="success",
                 metadata={
                     **row.get("metadata", {}),
@@ -187,6 +239,7 @@ def run_judging(config: RunConfig, responses_path: Path | None = None) -> Path:
                 annex_section=row["annex_section"],
                 is_machine_translation=row["is_machine_translation"],
                 raw_judge_output=str(exc),
+                judge_explanation="",
                 parsing_status="error",
                 metadata={
                     **row.get("metadata", {}),
@@ -201,15 +254,20 @@ def run_judging(config: RunConfig, responses_path: Path | None = None) -> Path:
         for future in as_completed(futures):
             append_jsonl(output_path, future.result().to_dict())
 
-    written = load_jsonl_index(output_path, "row_id")
+    written = compact_jsonl_by_key(output_path, "row_id")
+    success_count = sum(1 for row in written.values() if row.get("parsing_status") == "success")
+    failure_count = len(written) - success_count
+    stage_status = "completed" if failure_count == 0 else "completed_with_errors"
     write_json(
         _status_path(config),
         {
-            "status": "completed",
+            "status": stage_status,
             "output_path": str(output_path),
             "row_count_written": len(written),
-            "success_count": sum(1 for row in written.values() if row.get("parsing_status") == "success"),
-            "failure_count": sum(1 for row in written.values() if row.get("parsing_status") != "success"),
+            "success_count": success_count,
+            "failure_count": failure_count,
+            "allow_row_errors": config.allow_row_errors,
+            "complete": failure_count == 0,
         },
     )
 

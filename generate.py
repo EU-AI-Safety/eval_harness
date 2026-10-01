@@ -9,7 +9,7 @@ from time import time
 from .backends import create_backend
 from .config import RunConfig
 from .dataset import dataset_file_sha1, dataset_slice_sha1, load_dataset_rows, summarize_dataset
-from .io import append_jsonl, load_jsonl_index, write_json
+from .io import append_jsonl, compact_jsonl_by_key, load_jsonl_index, rewrite_jsonl, write_json
 from .run_specs import config_fingerprint
 from .types import GenerationRecord
 
@@ -26,6 +26,11 @@ def _status_path(config: RunConfig) -> Path:
     return config.output_dir / "manifests" / f"{config.resolved_run_name}.generation.status.json"
 
 
+def _successful_response_index(path: Path) -> dict[str, dict]:
+    index = load_jsonl_index(path, "row_id")
+    return {row_id: row for row_id, row in index.items() if row.get("status") == "success"}
+
+
 def plan_generation(config: RunConfig) -> dict:
     rows = load_dataset_rows(
         config.dataset_path,
@@ -39,7 +44,7 @@ def plan_generation(config: RunConfig) -> dict:
         sampling_seed=config.sampling_seed,
     )
     output_path = _response_path(config)
-    completed = {} if config.overwrite else load_jsonl_index(output_path, "row_id")
+    completed = {} if config.overwrite else _successful_response_index(output_path)
     summary = summarize_dataset(config)
     return {
         "task": "generation_plan",
@@ -84,7 +89,7 @@ def run_generation(config: RunConfig) -> Path:
         sampling_seed=config.sampling_seed,
     )
     output_path = _response_path(config)
-    completed = {} if config.overwrite else load_jsonl_index(output_path, "row_id")
+    completed = {} if config.overwrite else _successful_response_index(output_path)
     backend = create_backend(config.model)
     pending = [row for row in rows if row.row_id not in completed]
 
@@ -99,6 +104,7 @@ def run_generation(config: RunConfig) -> Path:
         "row_count_total": len(rows),
         "row_count_pending": len(pending),
         "row_count_completed_existing": len(completed),
+        "allow_row_errors": config.allow_row_errors,
         "filters": {
             "verified_only": config.verified_only,
             "language_include": list(config.language_include),
@@ -176,6 +182,9 @@ def run_generation(config: RunConfig) -> Path:
 
     if config.overwrite and output_path.exists():
         output_path.unlink()
+    elif completed:
+        # Drop prior non-success rows so retries replace them cleanly.
+        rewrite_jsonl(output_path, completed.values())
 
     with ThreadPoolExecutor(max_workers=max(1, config.concurrency)) as executor:
         futures = [executor.submit(process_row, row) for row in pending]
@@ -183,18 +192,22 @@ def run_generation(config: RunConfig) -> Path:
             record = future.result()
             append_jsonl(output_path, record.to_dict())
 
-    written_rows = load_jsonl_index(output_path, "row_id")
+    written_rows = compact_jsonl_by_key(output_path, "row_id")
     failure_count = sum(1 for row in written_rows.values() if row.get("status") != "success")
+    success_count = len(written_rows) - failure_count
+    stage_status = "completed" if failure_count == 0 else "completed_with_errors"
     write_json(
         _status_path(config),
         {
-            "status": "completed",
+            "status": stage_status,
             "output_path": str(output_path),
             "row_count_total": len(rows),
             "row_count_pending": len(pending),
             "row_count_written": len(written_rows),
-            "success_count": len(written_rows) - failure_count,
+            "success_count": success_count,
             "failure_count": failure_count,
+            "allow_row_errors": config.allow_row_errors,
+            "complete": failure_count == 0,
         },
     )
 

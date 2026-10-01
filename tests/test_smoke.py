@@ -33,8 +33,29 @@ class EvalHarnessSmokeTests(unittest.TestCase):
         self.assertTrue(all(row.language == "english" for row in rows))
 
     def test_normalize_judge_label(self) -> None:
+        from eval_harness.judge import parse_judge_output
+
         self.assertEqual(normalize_judge_label("refused"), "refused")
         self.assertEqual(normalize_judge_label("The answer is complied."), "complied")
+        label, explanation = parse_judge_output(
+            "label: refused\nexplanation: The model declined to help with the request."
+        )
+        self.assertEqual(label, "refused")
+        self.assertIn("declined", explanation.lower())
+
+        # Regression: judge outputs often wrap labels in angle brackets.
+        label, explanation = parse_judge_output(
+            "label: <refused>\nexplanation: The model refused and cited safety policy."
+        )
+        self.assertEqual(label, "refused")
+        self.assertIn("safety", explanation.lower())
+
+        # Fallback parsing should still preserve explanation text when present.
+        label, explanation = parse_judge_output(
+            "Result: complied\nexplanation: The model provided direct procedural guidance."
+        )
+        self.assertEqual(label, "complied")
+        self.assertIn("procedural", explanation.lower())
         with self.assertRaises(ValueError):
             normalize_judge_label("unclear")
 
@@ -71,7 +92,10 @@ class EvalHarnessSmokeTests(unittest.TestCase):
                 def generate(self, prompt: str, system_prompt: str | None = None) -> BackendResult:
                     lowered = prompt.lower()
                     label = "refused" if "should refuse" in lowered or "refuse" in lowered else "complied"
-                    return BackendResult(text=label, metadata={"stub": "judge"})
+                    return BackendResult(
+                        text=f"label: {label}\nexplanation: Stub rationale for {label}.",
+                        metadata={"stub": "judge"},
+                    )
 
             original_generate_factory = generate_module.create_backend
             original_judge_factory = judge_module.create_backend
@@ -108,6 +132,58 @@ class EvalHarnessSmokeTests(unittest.TestCase):
 
             overall = json.loads(overall_path.read_text(encoding="utf-8"))
             self.assertIn("confusion_matrix", overall)
+
+            judged_rows = [
+                json.loads(line) for line in judged_path.read_text(encoding="utf-8").splitlines() if line.strip()
+            ]
+            self.assertTrue(all(row.get("judge_explanation") for row in judged_rows))
+
+    def test_resume_retries_error_rows(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            output_dir = Path(tmp_dir)
+            model = ModelConfig(name="resume-model", backend="openai", model="stub", api_key="test-key")
+            config = RunConfig(
+                dataset_path=self.dataset_path,
+                output_dir=output_dir,
+                limit=2,
+                model=model,
+                run_name="resume-errors",
+            )
+
+            from eval_harness.backends.base import BackendResult
+            from eval_harness import generate as generate_module
+
+            class FailThenSucceedBackend:
+                def __init__(self) -> None:
+                    self.calls = 0
+
+                def generate(self, prompt: str, system_prompt: str | None = None) -> BackendResult:
+                    self.calls += 1
+                    if self.calls <= 2:
+                        raise RuntimeError("hard failure")
+                    return BackendResult(text="ok-after-retry", metadata={})
+
+            backend = FailThenSucceedBackend()
+            original_factory = generate_module.create_backend
+            try:
+                generate_module.create_backend = lambda cfg: backend
+                first_path = run_generation(config)
+                first_rows = [json.loads(line) for line in first_path.read_text(encoding="utf-8").splitlines()]
+                self.assertTrue(all(row["status"] == "error" for row in first_rows))
+
+                second_path = run_generation(config)
+                second_rows = [json.loads(line) for line in second_path.read_text(encoding="utf-8").splitlines()]
+            finally:
+                generate_module.create_backend = original_factory
+
+            self.assertEqual(second_path, first_path)
+            self.assertEqual(len(second_rows), 2)
+            self.assertTrue(all(row["status"] == "success" for row in second_rows))
+            self.assertTrue(all(row["response"] == "ok-after-retry" for row in second_rows))
+            status = json.loads(
+                (output_dir / "manifests" / "resume-errors.generation.status.json").read_text(encoding="utf-8")
+            )
+            self.assertTrue(status["complete"])
 
     def test_generation_retries_transient_backend_failures(self) -> None:
         with TemporaryDirectory() as tmp_dir:
